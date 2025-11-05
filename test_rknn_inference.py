@@ -1,0 +1,49 @@
+import numpy as np
+import cv2
+from rknnlite.api import RKNNLite
+
+# === 1. Инициализация модели ===
+rknn = RKNNLite()
+rknn.load_rknn('my_data/roofs.rknn')
+rknn.init_runtime()
+
+# === 2. Входное изображение ===
+orig_img = cv2.imread('my_data/images/12_PhotoLeft_g201b20022_f012_0011.JPG')
+img = cv2.resize(orig_img, (640, 640))
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+img = np.expand_dims(img, axis=0)
+
+# === 3. Инференс ===
+outputs = rknn.inference(inputs=[img])
+pred = outputs[0][0]          # (25200, 38)
+proto = outputs[1][0]         # (32, 160, 160)
+
+# === 4. Расшифровка ===
+boxes = pred[:, :4]
+objectness = pred[:, 4:5]
+class_probs = pred[:, 5:6]    # если один класс
+mask_coeffs = pred[:, 6:]     # (25200, 32)
+
+conf = objectness * class_probs
+mask = conf[:, 0] > 0.3       # фильтрация по порогу
+boxes = boxes[mask]
+mask_coeffs = mask_coeffs[mask]
+
+# === 5. Для каждого бокса восстановим маску ===
+for i, box in enumerate(boxes):
+    coeff = mask_coeffs[i]
+    mask = np.dot(coeff, proto.reshape(32, -1))  # (1, 160*160)
+    mask = mask.reshape(160, 160)
+    mask = 1 / (1 + np.exp(-mask))               # sigmoid
+
+    # Ресайзим под оригинал
+    mask = cv2.resize(mask, (orig_img.shape[1], orig_img.shape[0]))
+    mask = (mask > 0.5).astype(np.uint8) * 255
+
+    # Маска поверх изображения
+    colored = orig_img.copy()
+    colored[mask > 0] = (0, 255, 0)  # зелёный слой
+    result = cv2.addWeighted(orig_img, 0.7, colored, 0.3, 0)
+
+cv2.imshow('segmentation', result)
+cv2.waitKey(0)
